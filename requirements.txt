@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-multipart
+easyocr
+google-generativeai
+python-dotenv
+openpyxl
+opencv-python
+PyPDF2
+pdf2image
