@@ -1,94 +1,87 @@
-import easyocr
-import google.generativeai as genai
-from PIL import Image
-import cv2
-import numpy as np
 import os
-from pdf2image import convert_from_path
-from typing import List
-
-# --- Configuración de APIs (Carga desde variables de entorno) ---
-# Crea un archivo .env en la raíz y añade tu clave: GOOGLE_API_KEY="AIza..."
+from typing import List, Union
+from PIL import Image
+import google.generativeai as genai
 from dotenv import load_dotenv
+from google.generativeai.types import File
+
+# --- Configuración de la API de Gemini ---
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+try:
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("La variable de entorno GOOGLE_API_KEY no se encontró.")
+    genai.configure(api_key=api_key)
+except (ValueError, TypeError) as e:
+    raise RuntimeError(f"Error en la configuración de la API de Gemini: {e}")
 
-# Inicializa el lector de EasyOCR (solo una vez para mejorar el rendimiento)
-reader = easyocr.Reader(['es', 'en']) # Puedes añadir más idiomas
+def file_to_text(file_path: str, prompt_fields: List[str]) -> str:
+    """
+    Dispatcher principal que detecta el tipo de archivo y lo procesa de forma nativa con Gemini.
+    - Imágenes se envían directamente.
+    - PDFs se suben con la File API y luego se procesan.
 
-def preprocess_image(image_path):
-    """Mejora la calidad de la imagen para el OCR."""
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    # Aplicar umbral adaptativo para mejorar la binarización
-    img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    # Opcional: Reducción de ruido
-    img = cv2.medianBlur(img, 1)
-    return Image.fromarray(img)
+    Args:
+        file_path: La ruta al archivo local (PDF o imagen).
+        prompt_fields: Lista de campos a extraer.
 
-def file_to_text(file_path: str, ocr_engine: str, prompt_fields: List[str]) -> str:
-    """Función principal que convierte un archivo (imagen o PDF) a texto usando el motor OCR especificado."""
+    Returns:
+        Una cadena con formato JSON que contiene los datos extraídos.
+    """
+    media_part: Union[Image.Image, File]
     
-    text_results = []
-    
-    if file_path.lower().endswith('.pdf'):
-        images = convert_from_path(file_path)
-        for i, image in enumerate(images):
-            if ocr_engine == 'gemini':
-                # Gemini puede manejar imágenes directamente
-                 text_results.append(ocr_with_gemini(image, prompt_fields))
-            else: # easyocr
-                temp_image_path = f"temp_page_{i}.png"
-                image.save(temp_image_path, 'PNG')
-                text_results.append(ocr_with_easyocr(temp_image_path))
-                os.remove(temp_image_path)
-    else: # Es una imagen
-        if ocr_engine == 'gemini':
-             return ocr_with_gemini(Image.open(file_path), prompt_fields)
-        elif ocr_engine == 'easyocr':
-            return ocr_with_easyocr(file_path)
-
-    # Si fue un PDF, Gemini ya devolvió datos estructurados, los otros devuelven texto plano
-    return "\n".join(text_results)
-
-def ocr_with_easyocr(image_path: str) -> str:
-    """Extrae texto de una imagen usando EasyOCR."""
     try:
-        # detail=0 devuelve solo el texto, paragraph=True intenta agruparlo
-        result = reader.readtext(image_path, detail=0, paragraph=True)
-        return "\n".join(result)
+        file_extension = os.path.splitext(file_path)[1].lower()
+        
+        if file_extension == '.pdf':
+            # Flujo para PDFs: Subir el archivo y obtener una referencia.
+            pdf_file = genai.upload_file(path=file_path, display_name=os.path.basename(file_path))
+            media_part = pdf_file
+        elif file_extension in ['.png', '.jpg', '.jpeg', '.webp']:
+            # Flujo para imágenes: Abrir el archivo.
+            media_part = Image.open(file_path)
+        else:
+            return f'{{"error": "Formato de archivo no soportado: {file_extension}"}}'
+
+        # Llamar a la función interna que se comunica con Gemini
+        return _call_gemini_api(media_part, prompt_fields)
+
     except Exception as e:
-        return f"Error con EasyOCR: {e}"
+        return f'{{"error": "Ocurrió un error al procesar el archivo.", "details": "{str(e)}"}}'
 
-def ocr_with_gemini(image: Image.Image, fields_to_extract: List[str]) -> str:
-    """Extrae datos estructurados de una imagen usando Gemini Pro Vision."""
+def _call_gemini_api(media_part: Union[Image.Image, File], fields_to_extract: List[str]) -> str:
+    """
+    Función interna que construye el prompt y llama a la API de Gemini.
+    """
     try:
+        # gemini-1.5-pro-latest es ideal para analizar documentos complejos como PDFs.
         model = genai.GenerativeModel('gemini-2.5-pro')
         
-        # Crear un prompt dinámico basado en los campos del Excel
+        fields_str = '", "'.join(fields_to_extract)
         prompt = f"""
-Analiza la siguiente imagen de una factura. Extrae únicamente los siguientes campos
-y devuelve el resultado estrictamente en formato JSON:
+Actúa como un experto en extracción de datos de facturas.
+Analiza el documento adjunto. Extrae únicamente los siguientes campos y devuelve el resultado estrictamente en formato JSON:
 
-{', '.join(fields_to_extract)}.
+"{fields_str}"
 
-Reglas:
-1. El JSON debe contener exclusivamente los campos de la lista indicada.
-2. Si un campo no aparece en la factura, devuélvelo como "N/A".
-3. No inventes información ni agregues campos adicionales.
-4. El formato debe ser JSON válido, sin texto adicional fuera del objeto.
+REGLAS ESTRICTAS:
+1. El resultado DEBE SER un único objeto JSON válido. No incluyas texto, explicaciones, ni la palabra "json" antes o después del objeto.
+2. El JSON debe contener exclusivamente los campos de la lista indicada.
+3. Si un campo no se encuentra en la factura, su valor debe ser `null`.
+4. Para los campos numéricos (como montos o totales), devuelve un tipo de dato numérico (ej: 123.45), no un string (ej: "123.45").
 
 Ejemplo de salida esperada:
-
 {{
-  "{fields_to_extract[0]}": "valor_extraido_1",
-  "{fields_to_extract[1]}": "valor_extraido_2",
-  "{fields_to_extract[2]}": "N/A"
+  "Fecha": "2025-09-07",
+  "Total": 356.40,
+  "Cliente": "KEVIN RODRIGO SOTO HERRERA"
 }}
 """
+        content = [prompt, media_part]
+        response = model.generate_content(content)
         
-        response = model.generate_content([prompt, image])
-        # Limpiar la respuesta para que sea un JSON válido
         cleaned_response = response.text.strip().replace('```json', '').replace('```', '')
         return cleaned_response
+
     except Exception as e:
-        return f"Error con Gemini API: {e}"
+        return f'{{"error": "Ocurrió un error al contactar la API de Gemini.", "details": "{str(e)}"}}'

@@ -1,15 +1,15 @@
 import os
 import shutil
 import json
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import FileResponse
 import openpyxl
-from typing import Literal
+from typing import List # CAMBIO: Importar List para manejar múltiples archivos
 
 from ocr_services import file_to_text
 
 # --- Inicialización de la App y directorios ---
-app = FastAPI(title="Factura OCR API", description="API para extraer datos de facturas a Excel.")
+app = FastAPI(title="Factura OCR API (Procesamiento por Lotes)", description="API para extraer datos de múltiples facturas a Excel usando Gemini.")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
@@ -18,7 +18,6 @@ TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
-# Guardamos la plantilla activa en memoria (en una app real se usaría una DB o un sistema de caché)
 active_template = {"path": None, "fields": []}
 
 @app.post("/upload-template/")
@@ -38,7 +37,6 @@ async def upload_template(file: UploadFile = File(...)):
     try:
         workbook = openpyxl.load_workbook(template_path)
         sheet = workbook.active
-        # Leemos los encabezados de la primera fila
         headers = [cell.value for cell in sheet[1] if cell.value]
         
         if not headers:
@@ -52,82 +50,72 @@ async def upload_template(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"No se pudo procesar la plantilla: {e}")
 
 @app.post("/process-invoice/")
-async def process_invoice(
-    # CAMBIO IMPORTANTE: Eliminado 'tesseract' de las opciones válidas
-    ocr_engine: Literal['easyocr', 'gemini'] = Form(...),
-    file: UploadFile = File(...)
-):
+# CAMBIO: La firma ahora acepta una LISTA de UploadFile
+async def process_invoice(files: List[UploadFile] = File(...)):
     """
-    Endpoint para procesar una factura (imagen o PDF) y extraer datos.
-    Requiere que una plantilla haya sido subida previamente.
+    Endpoint para procesar una o más facturas (imágenes o PDFs) y extraer los datos.
     """
     if not active_template["path"]:
         raise HTTPException(status_code=400, detail="Primero debe subir una plantilla de Excel a través del endpoint /upload-template/")
 
-    file_extension = os.path.splitext(file.filename)[1].lower()
-    if file_extension not in ['.png', '.jpg', '.jpeg', '.pdf']:
-        raise HTTPException(status_code=400, detail="Formato de archivo no soportado. Use PNG, JPG o PDF.")
-
-    # Guardar el archivo subido temporalmente
-    file_path = os.path.join(UPLOADS_DIR, file.filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    # --- Extracción de Texto con el motor OCR seleccionado ---
-    extracted_text_or_json = file_to_text(file_path, ocr_engine, active_template["fields"])
-    
-    # --- Procesamiento de resultados y generación de Excel ---
+    # CAMBIO: Cargar el libro de trabajo UNA SOLA VEZ, antes de empezar a procesar los archivos.
     try:
         workbook = openpyxl.load_workbook(active_template["path"])
         sheet = workbook.active
-        
-        extracted_data = {}
-        
-        if ocr_engine == 'gemini':
-            # Gemini ya devuelve un JSON (en formato string), lo parseamos
-            try:
-                extracted_data = json.loads(extracted_text_or_json)
-            except json.JSONDecodeError:
-                 raise HTTPException(status_code=500, detail=f"Gemini no devolvió un JSON válido. Respuesta: {extracted_text_or_json}")
-        else:
-            # Para EasyOCR, hacemos una búsqueda simple de palabras clave
-            text_lines = extracted_text_or_json.lower().split('\n')
-            for field in active_template["fields"]:
-                found = False
-                for line in text_lines:
-                    if field.lower() in line:
-                        try:
-                            value = line.split(field.lower())[1].strip().replace(':', '').strip()
-                            extracted_data[field] = value
-                            found = True
-                            break
-                        except IndexError:
-                            continue
-                if not found:
-                    extracted_data[field] = "N/A" # No encontrado
-        
-        # Escribir los datos en una nueva fila
-        new_row = []
-        for field in active_template["fields"]:
-            new_row.append(extracted_data.get(field, "N/A"))
-            
-        sheet.append(new_row)
-        
-        output_filename = f"processed_{os.path.splitext(os.path.basename(active_template['path']))[0]}.xlsx"
-        output_path = os.path.join(UPLOADS_DIR, output_filename)
-        workbook.save(output_path)
-        
-        # Limpiar el archivo subido
-        os.remove(file_path)
-
-        return FileResponse(path=output_path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename=output_filename)
-
     except Exception as e:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        raise HTTPException(status_code=500, detail=f"Error procesando el archivo Excel: {e}")
+        raise HTTPException(status_code=500, detail=f"No se pudo cargar la plantilla de Excel: {e}")
+
+    temp_file_paths = [] # Lista para guardar las rutas de los archivos temporales y borrarlos al final
+
+    # CAMBIO: Bucle para procesar cada archivo subido
+    for file in files:
+        file_extension = os.path.splitext(file.filename)[1].lower()
+        if file_extension not in ['.png', '.jpg', '.jpeg', '.pdf', '.webp']:
+            # Si un archivo no es válido, podemos saltarlo y continuar con los demás
+            print(f"Archivo omitido por formato no válido: {file.filename}")
+            continue
+
+        file_path = os.path.join(UPLOADS_DIR, file.filename)
+        temp_file_paths.append(file_path) # Añadir a la lista para borrarlo después
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        extracted_json_string = file_to_text(file_path, active_template["fields"])
+        
+        try:
+            extracted_data = json.loads(extracted_json_string)
+            if 'error' in extracted_data:
+                print(f"Error procesando {file.filename}: {extracted_data.get('details', 'Error desconocido')}")
+                # Creamos una fila de error para saber qué archivo falló
+                new_row = [f"ERROR: {file.filename}"] + ["Error al procesar"] * (len(active_template["fields"]) - 1)
+            else:
+                # Construir la fila con los datos extraídos
+                new_row = [extracted_data.get(field) for field in active_template["fields"]]
+            
+            sheet.append(new_row)
+
+        except json.JSONDecodeError:
+            print(f"Error: Gemini no devolvió un JSON válido para el archivo {file.filename}. Respuesta: {extracted_json_string}")
+            new_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida"] * (len(active_template["fields"]) - 1)
+            sheet.append(new_row)
+        except Exception as e:
+            print(f"Error inesperado procesando {file.filename}: {e}")
+            new_row = [f"ERROR: {file.filename}"] + [f"Error: {e}"] * (len(active_template["fields"]) - 1)
+            sheet.append(new_row)
+
+    # CAMBIO: Guardar el archivo Excel UNA SOLA VEZ, después de procesar todos los archivos.
+    output_filename = f"processed_batch_{active_template['path'].split('/')[-1]}.xlsx"
+    output_path = os.path.join(UPLOADS_DIR, output_filename)
+    workbook.save(output_path)
+    
+    # CAMBIO: Limpiar todos los archivos temporales que se subieron
+    for path in temp_file_paths:
+        if os.path.exists(path):
+            os.remove(path)
+
+    return FileResponse(path=output_path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename=output_filename)
 
 @app.get("/")
 def read_root():
-    return {"message": "Bienvenido a la API de OCR para Facturas. Visita /docs para la documentación interactiva."}
-
+    return {"message": "Bienvenido a la API de OCR para Facturas (v4 - Lotes). Visita /docs para la documentación."}
