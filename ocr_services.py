@@ -62,22 +62,29 @@ def ocr_with_easyocr(image_path: str) -> str:
 def ocr_with_gemini(image: Image.Image, fields_to_extract: List[str]) -> str:
     """Extrae datos estructurados de una imagen usando Gemini Pro Vision."""
     try:
-        model = genai.GenerativeModel('gemini-pro-vision')
+        model = genai.GenerativeModel('gemini-2.5-pro')
         
         # Crear un prompt dinámico basado en los campos del Excel
         prompt = f"""
-        Analiza la siguiente imagen de una factura. Extrae los siguientes campos y devuelve el resultado en formato JSON.
-        Los campos a extraer son: {', '.join(fields_to_extract)}.
-        
-        Si un campo no se encuentra, devuélvelo como "N/A".
-        
-        Ejemplo de respuesta esperada:
-        {{
-          "{fields_to_extract[0]}": "valor_extraido_1",
-          "{fields_to_extract[1]}": "valor_extraido_2",
-          ...
-        }}
-        """
+Analiza la siguiente imagen de una factura. Extrae únicamente los siguientes campos
+y devuelve el resultado estrictamente en formato JSON:
+
+{', '.join(fields_to_extract)}.
+
+Reglas:
+1. El JSON debe contener exclusivamente los campos de la lista indicada.
+2. Si un campo no aparece en la factura, devuélvelo como "N/A".
+3. No inventes información ni agregues campos adicionales.
+4. El formato debe ser JSON válido, sin texto adicional fuera del objeto.
+
+Ejemplo de salida esperada:
+
+{{
+  "{fields_to_extract[0]}": "valor_extraido_1",
+  "{fields_to_extract[1]}": "valor_extraido_2",
+  "{fields_to_extract[2]}": "N/A"
+}}
+"""
         
         response = model.generate_content([prompt, image])
         # Limpiar la respuesta para que sea un JSON válido
