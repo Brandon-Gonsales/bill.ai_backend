@@ -123,7 +123,7 @@ async def process_invoice(files: List[UploadFile] = File(...)):
             sheet.append(new_row)
 
     # CAMBIO: Guardar el archivo Excel UNA SOLA VEZ, después de procesar todos los archivos.
-    output_filename = f"processed_batch_{active_template['path'].split('/')[-1]}.xlsx"
+    output_filename = f"processed_batch_{os.path.basename(active_template['path'])}"
     output_path = os.path.join(UPLOADS_DIR, output_filename)
     workbook.save(output_path)
     
