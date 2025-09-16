@@ -3,14 +3,32 @@ import shutil
 import json
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import FileResponse
+# CAMBIO: Importar CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 import openpyxl
-from typing import List # CAMBIO: Importar List para manejar múltiples archivos
+from typing import List
 
 from ocr_services import file_to_text
 
 # --- Inicialización de la App y directorios ---
 app = FastAPI(title="Factura OCR API (Procesamiento por Lotes)", description="API para extraer datos de múltiples facturas a Excel usando Gemini.")
 
+# --- CAMBIO: Configuración de CORS ---
+# Lista de orígenes permitidos (los puertos de tu frontend)
+origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+]
+
+# Añadir el middleware de CORS a la aplicación
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Permitir todos los métodos (GET, POST, etc.)
+    allow_headers=["*"], # Permitir todos los encabezados
+)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
