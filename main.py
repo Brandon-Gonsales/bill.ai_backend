@@ -54,7 +54,7 @@ async def upload_template(file: UploadFile = File(...)):
         return {"message": "Plantilla cargada exitosamente", "campos_detectados": headers}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"No se pudo procesar la plantilla: {e}")
-
+#dldldldl
 @app.post("/clear-template/")
 async def clear_template():
     active_template["path"] = None
