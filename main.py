@@ -69,42 +69,55 @@ async def process_invoice(
     nombre: str = Form(None),
     nit: str = Form(None)
 ):
-    workbook = openpyxl.Workbook()
-    # CAMBIO: Crear dos hojas, una para Compras y otra para Ventas
-    sheet_compras = workbook.active
-    sheet_compras.title = "Registro de Compras"
-    sheet_ventas = workbook.create_sheet("Registro de Ventas")
-    
-    # Escribir los encabezados oficiales en cada hoja
-    sheet_compras.append(BOLIVIAN_COMPRAS_FIELDS)
-    sheet_ventas.append(BOLIVIAN_VENTAS_FIELDS)
-    
-    # CAMBIO: Lógica de Flujo Dual adaptada al RCV
+    temp_file_paths = [] # Para la limpieza final
+
+    # --- CORRECCIÓN: Separación total de la lógica ---
     if active_template["path"]:
         # --- Flujo 1: CON PLANTILLA PERSONALIZADA ---
-        # (Este flujo ahora usa una tercera hoja para no interferir con el RCV)
-        sheet_custom = workbook.create_sheet("Resultado Plantilla Custom")
-        sheet_custom.append(active_template["fields"])
-        
+        print("INFO: Ejecutando flujo CON plantilla.")
+        try:
+            # Cargar el libro de trabajo DESDE la plantilla guardada
+            workbook = openpyxl.load_workbook(active_template["path"])
+            sheet = workbook.active
+            fields_for_header = active_template["fields"]
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error al cargar la plantilla guardada: {e}")
+
         for file in files:
             file_path = os.path.join(UPLOADS_DIR, file.filename)
+            temp_file_paths.append(file_path)
             with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-            json_string = extract_data_with_template(file_path, active_template["fields"])
+            
+            json_string = extract_data_with_template(file_path, fields_for_header)
             try:
                 data = json.loads(json_string)
-                new_row = [data.get(field) for field in active_template["fields"]]
+                new_row = [data.get(field) for field in fields_for_header]
             except (json.JSONDecodeError, AttributeError):
-                new_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida"] * (len(active_template["fields"]) - 1)
-            sheet_custom.append(new_row)
-            os.remove(file_path)
+                new_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida"] * (len(fields_for_header) - 1)
+            sheet.append(new_row)
+        
+        output_filename = f"processed_{os.path.basename(active_template['path'])}"
+        
     else:
         # --- Flujo 2: SIN PLANTILLA (Generación de RCV) ---
+        print("INFO: Ejecutando flujo SIN plantilla (RCV).")
         if not nombre or not nit:
             raise HTTPException(status_code=400, detail="Se requiere 'nombre' y 'nit' cuando no hay plantilla.")
         
+        # Crear un libro de trabajo NUEVO para el RCV
+        workbook = openpyxl.Workbook()
+        sheet_compras = workbook.active
+        sheet_compras.title = "Registro de Compras"
+        sheet_ventas = workbook.create_sheet("Registro de Ventas")
+        
+        sheet_compras.append(BOLIVIAN_COMPRAS_FIELDS)
+        sheet_ventas.append(BOLIVIAN_VENTAS_FIELDS)
+        
         for file in files:
             file_path = os.path.join(UPLOADS_DIR, file.filename)
+            temp_file_paths.append(file_path)
             with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+            
             json_string = extract_data_without_template(file_path, nombre, nit)
             try:
                 response = json.loads(json_string)
@@ -118,19 +131,23 @@ async def process_invoice(
                     new_row = [data.get(field) for field in BOLIVIAN_VENTAS_FIELDS]
                     sheet_ventas.append(new_row)
                 else:
-                    # Si no se pudo clasificar, lo añadimos a la primera hoja como error
                     error_row = [f"ERROR: {file.filename}"] + ["No se pudo clasificar"] * (len(BOLIVIAN_COMPRAS_FIELDS) - 1)
                     sheet_compras.append(error_row)
 
             except (json.JSONDecodeError, AttributeError):
                  error_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida de la IA"] * (len(BOLIVIAN_COMPRAS_FIELDS) - 1)
                  sheet_compras.append(error_row)
-            os.remove(file_path)
 
-    # --- Guardado y respuesta (sin cambios) ---
-    output_filename = "RCV_Procesado.xlsx"
+        output_filename = "RCV_Procesado.xlsx"
+
+    # --- Lógica común de guardado y limpieza ---
     output_path = os.path.join(UPLOADS_DIR, output_filename)
     workbook.save(output_path)
+    
+    for path in temp_file_paths:
+        if os.path.exists(path):
+            os.remove(path)
+            
     return FileResponse(path=output_path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename=output_filename)
 
 @app.get("/")

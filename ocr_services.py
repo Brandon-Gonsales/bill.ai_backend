@@ -53,7 +53,7 @@ def extract_data_with_template(file_path: str, prompt_fields: List[str]) -> str:
     try:
         media_part = _get_media_part(file_path)
         if media_part is None: return f'{{"error": "Formato de archivo no soportado."}}'
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        model = genai.GenerativeModel('gemini-2.5-pro')
         fields_str = '", "'.join(prompt_fields)
         prompt = f"""Actúa como un experto en extracción de datos. Analiza el documento y extrae los siguientes campos en formato JSON: "{fields_str}". Reglas: El resultado debe ser solo el objeto JSON. Si un campo no se encuentra, su valor debe ser `null`. Los valores numéricos deben ser números, no strings."""
         content = [prompt, media_part]
@@ -70,7 +70,7 @@ def extract_data_without_template(file_path: str, user_name: str, user_nit: str)
         media_part = _get_media_part(file_path)
         if media_part is None: return f'{{"error": "Formato de archivo no soportado."}}'
 
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        model = genai.GenerativeModel('gemini-2.5-pro')
         
         # --- CAMBIO: Prompt altamente especializado para el RCV de Bolivia ---
         prompt = f"""
