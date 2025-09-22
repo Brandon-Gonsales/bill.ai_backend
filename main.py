@@ -19,6 +19,7 @@ origins = [
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5175",
+    "https://bill-ai-frontend.vercel.app",
 ]
 
 # Añadir el middleware de CORS a la aplicación
