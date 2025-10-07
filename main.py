@@ -36,6 +36,23 @@ os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
 active_template = {"path": None, "fields": []}
 
+# vvv AÑADE ESTE BLOQUE DE CÓDIGO COMPLETO vvv
+def _prepare_row_for_excel(row_data: list) -> list:
+    """
+    Revisa cada celda de una fila. Si el contenido es una lista o un diccionario,
+    lo convierte a un string JSON. De lo contrario, lo deja como está.
+    Esto previene el error 'ValueError: Cannot convert ... to Excel'.
+    """
+    prepared_row = []
+    for item in row_data:
+        if isinstance(item, (list, dict)):
+            # Convertir a string JSON, ensure_ascii=False para acentos y caracteres especiales
+            prepared_row.append(json.dumps(item, ensure_ascii=False, indent=2))
+        else:
+            prepared_row.append(item)
+    return prepared_row
+# ^^^ FIN DEL BLOQUE A AÑADIR ^^^
+
 # --- Endpoints /upload-template/ y /clear-template/ (sin cambios) ---
 @app.post("/upload-template/")
 async def upload_template(file: UploadFile = File(...)):
@@ -94,7 +111,8 @@ async def process_invoice(
                 new_row = [data.get(field) for field in fields_for_header]
             except (json.JSONDecodeError, AttributeError):
                 new_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida"] * (len(fields_for_header) - 1)
-            sheet.append(new_row)
+            prepared_row = _prepare_row_for_excel(new_row)
+            sheet.append(prepared_row)
         
         output_filename = f"processed_{os.path.basename(active_template['path'])}"
         
@@ -126,10 +144,12 @@ async def process_invoice(
 
                 if invoice_type == "Compra":
                     new_row = [data.get(field) for field in BOLIVIAN_COMPRAS_FIELDS]
-                    sheet_compras.append(new_row)
+                    prepared_row = _prepare_row_for_excel(new_row)
+                    sheet_compras.append(prepared_row)
                 elif invoice_type == "Venta":
                     new_row = [data.get(field) for field in BOLIVIAN_VENTAS_FIELDS]
-                    sheet_ventas.append(new_row)
+                    prepared_row = _prepare_row_for_excel(new_row)
+                    sheet_ventas.append(prepared_row)
                 else:
                     error_row = [f"ERROR: {file.filename}"] + ["No se pudo clasificar"] * (len(BOLIVIAN_COMPRAS_FIELDS) - 1)
                     sheet_compras.append(error_row)
