@@ -87,7 +87,8 @@ async def clear_template():
 async def process_invoice(
     files: List[UploadFile] = File(...),
     nombre: str = Form(None),
-    nit: str = Form(None)
+    nit: str = Form(None),
+    es_compra: bool = Form(True)
 ):
     temp_file_paths = [] # Para la limpieza final
 
@@ -120,6 +121,7 @@ async def process_invoice(
         output_filename = f"processed_{os.path.basename(active_template['path'])}"
         output_path = os.path.join(UPLOADS_DIR, output_filename)
         workbook.save(output_path)
+        media_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         
     else:
         # --- Flujo 2: SIN PLANTILLA (Generación de RCV) ---
@@ -127,69 +129,63 @@ async def process_invoice(
         if not nombre or not nit:
             raise HTTPException(status_code=400, detail="Se requiere 'nombre' y 'nit' cuando no hay plantilla.")
         
-        try:
-            wb_compras = openpyxl.load_workbook(COMPRAS_TEMPLATE_PATH)
-            sheet_compras = wb_compras.active
+        # 1. Decidir qué plantilla y qué campos usar basado en el booleano
+        if es_compra:
+            template_path = COMPRAS_TEMPLATE_PATH
+            fields_for_rcv = BOLIVIAN_COMPRAS_FIELDS
+            output_filename = "RCV_Compras_Procesado.xlsx"
+            print("INFO: Procesando lote como COMPRAS.")
+        else:
+            template_path = VENTAS_TEMPLATE_PATH
+            fields_for_rcv = BOLIVIAN_VENTAS_FIELDS
+            output_filename = "RCV_Ventas_Procesado.xlsx"
+            print("INFO: Procesando lote como VENTAS.")
 
-            wb_ventas = openpyxl.load_workbook(VENTAS_TEMPLATE_PATH)
-            sheet_ventas = wb_ventas.active
+        # 2. Cargar el libro de trabajo de la plantilla elegida
+        try:
+            workbook = openpyxl.load_workbook(template_path)
+            sheet = workbook.active
         except FileNotFoundError:
-            raise HTTPException(status_code=500, detail="No se encontraron las plantillas maestras RCV en el servidor.")
+            raise HTTPException(status_code=500, detail=f"No se encontró la plantilla maestra {os.path.basename(template_path)} en el servidor.")
         
+        
+         # 3. Procesar cada archivo (sin clasificar)
         for file in files:
             file_path = os.path.join(UPLOADS_DIR, file.filename)
             temp_file_paths.append(file_path)
             with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
             
-            json_string = extract_data_without_template(file_path, nombre, nit)
+            # Llamamos a la nueva y simple función de extracción
+            json_string = extract_data_without_template(file_path, fields_for_rcv)
             try:
-                response = json.loads(json_string)
-                invoice_type = response.get("tipo_factura")
-                data = response.get("datos", {})
-
-                if invoice_type == "Compra":
-                    new_row = [data.get(field) for field in BOLIVIAN_COMPRAS_FIELDS]
-                    prepared_row = _prepare_row_for_excel(new_row)
-                    sheet_compras.append(prepared_row)
-                elif invoice_type == "Venta":
-                    new_row = [data.get(field) for field in BOLIVIAN_VENTAS_FIELDS]
-                    prepared_row = _prepare_row_for_excel(new_row)
-                    sheet_ventas.append(prepared_row)
+                data = json.loads(json_string)
+                new_row = [data.get(field) for field in fields_for_rcv]
+                
+                idx_especificacion = fields_for_rcv.index('ESPECIFICACION')
+                if es_compra:
+                    new_row[idx_especificacion] = 1 
                 else:
-                    error_row = [f"ERROR: {file.filename}"] + ["No se pudo clasificar"] * (len(BOLIVIAN_COMPRAS_FIELDS) - 1)
-                    sheet_compras.append(error_row)
+                    new_row[idx_especificacion] = 2
+                    idx_estado = fields_for_rcv.index('ESTADO')
+                    new_row[idx_estado] = "V"
 
-            except (json.JSONDecodeError, AttributeError):
-                 error_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida de la IA"] * (len(BOLIVIAN_COMPRAS_FIELDS) - 1)
-                 sheet_compras.append(error_row)
+            except (json.JSONDecodeError, AttributeError, IndexError, ValueError):
+                 new_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida o error de procesamiento"] * (len(fields_for_rcv) - 1)
+            
+            prepared_row = _prepare_row_for_excel(new_row)
+            sheet.append(prepared_row)
 
-        compras_output_filename = "RCV_Compras_Procesado.xlsx"
-        ventas_output_filename = "RCV_Ventas_Procesado.xlsx"
-        compras_output_path = os.path.join(UPLOADS_DIR, compras_output_filename)
-        ventas_output_path = os.path.join(UPLOADS_DIR, ventas_output_filename)
 
-        wb_compras.save(compras_output_path)
-        wb_ventas.save(ventas_output_path)
-        
-        temp_file_paths.append(compras_output_path)
-        temp_file_paths.append(ventas_output_path)
-
-        zip_filename = "RCV_Procesado.zip"
-        zip_path = os.path.join(UPLOADS_DIR, zip_filename)
-        with zipfile.ZipFile(zip_path, 'w') as zipf:
-            zipf.write(compras_output_path, arcname=compras_output_filename)
-            zipf.write(ventas_output_path, arcname=ventas_output_filename)
-        
-        # vvv Se definen las variables de salida para la sección común vvv
-        output_path = zip_path
-        output_filename = zip_filename
-
+        # 4. Guardar el único archivo Excel resultante
+        output_path = os.path.join(UPLOADS_DIR, output_filename)
+        workbook.save(output_path)
+        media_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     # --- Lógica común de guardado y limpieza ---
        
     for path in temp_file_paths:
         if os.path.exists(path):
             os.remove(path)
-    media_type = 'application/zip' if output_filename.endswith('.zip') else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'        
+            
     return FileResponse(path=output_path, media_type=media_type, filename=output_filename)
 
 @app.get("/")
