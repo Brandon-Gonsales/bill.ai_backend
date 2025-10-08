@@ -1,8 +1,8 @@
 fastapi
 uvicorn[standard]
 python-multipart
-google-generativeai
 python-dotenv
 openpyxl
 Pillow
-
+openai
+PyMuPDF

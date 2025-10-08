@@ -10,8 +10,7 @@ from typing import List
 
 # CAMBIO: Importar las nuevas listas de columnas oficiales del RCV
 from ocr_services import (
-    extract_data_with_template, 
-    extract_data_without_template,
+    extract_data_with_openai,
     BOLIVIAN_COMPRAS_FIELDS,
     BOLIVIAN_VENTAS_FIELDS
 )
@@ -109,7 +108,7 @@ async def process_invoice(
             temp_file_paths.append(file_path)
             with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
             
-            json_string = extract_data_with_template(file_path, fields_for_header)
+            json_string = extract_data_with_openai(file_path, fields_for_header)
             try:
                 data = json.loads(json_string)
                 new_row = [data.get(field) for field in fields_for_header]
@@ -156,7 +155,7 @@ async def process_invoice(
             with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
             
             # Llamamos a la nueva y simple función de extracción
-            json_string = extract_data_without_template(file_path, fields_for_rcv)
+            json_string = extract_data_with_openai(file_path, fields_for_rcv)
             try:
                 data = json.loads(json_string)
                 new_row = [data.get(field) for field in fields_for_rcv]
