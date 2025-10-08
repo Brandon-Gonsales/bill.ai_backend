@@ -1,6 +1,7 @@
 import os
 import shutil
 import json
+import zipfile 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,7 +34,9 @@ UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
-
+RCV_TEMPLATES_DIR = os.path.join(TEMPLATES_DIR, "rcv_templates")
+COMPRAS_TEMPLATE_PATH = os.path.join(RCV_TEMPLATES_DIR, "RCV_Compras_Template.xlsx")
+VENTAS_TEMPLATE_PATH = os.path.join(RCV_TEMPLATES_DIR, "RCV_Ventas_Template.xlsx")
 active_template = {"path": None, "fields": []}
 
 # vvv AÑADE ESTE BLOQUE DE CÓDIGO COMPLETO vvv
@@ -115,6 +118,8 @@ async def process_invoice(
             sheet.append(prepared_row)
         
         output_filename = f"processed_{os.path.basename(active_template['path'])}"
+        output_path = os.path.join(UPLOADS_DIR, output_filename)
+        workbook.save(output_path)
         
     else:
         # --- Flujo 2: SIN PLANTILLA (Generación de RCV) ---
@@ -122,14 +127,14 @@ async def process_invoice(
         if not nombre or not nit:
             raise HTTPException(status_code=400, detail="Se requiere 'nombre' y 'nit' cuando no hay plantilla.")
         
-        # Crear un libro de trabajo NUEVO para el RCV
-        workbook = openpyxl.Workbook()
-        sheet_compras = workbook.active
-        sheet_compras.title = "Registro de Compras"
-        sheet_ventas = workbook.create_sheet("Registro de Ventas")
-        
-        sheet_compras.append(BOLIVIAN_COMPRAS_FIELDS)
-        sheet_ventas.append(BOLIVIAN_VENTAS_FIELDS)
+        try:
+            wb_compras = openpyxl.load_workbook(COMPRAS_TEMPLATE_PATH)
+            sheet_compras = wb_compras.active
+
+            wb_ventas = openpyxl.load_workbook(VENTAS_TEMPLATE_PATH)
+            sheet_ventas = wb_ventas.active
+        except FileNotFoundError:
+            raise HTTPException(status_code=500, detail="No se encontraron las plantillas maestras RCV en el servidor.")
         
         for file in files:
             file_path = os.path.join(UPLOADS_DIR, file.filename)
@@ -158,17 +163,34 @@ async def process_invoice(
                  error_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida de la IA"] * (len(BOLIVIAN_COMPRAS_FIELDS) - 1)
                  sheet_compras.append(error_row)
 
-        output_filename = "RCV_Procesado.xlsx"
+        compras_output_filename = "RCV_Compras_Procesado.xlsx"
+        ventas_output_filename = "RCV_Ventas_Procesado.xlsx"
+        compras_output_path = os.path.join(UPLOADS_DIR, compras_output_filename)
+        ventas_output_path = os.path.join(UPLOADS_DIR, ventas_output_filename)
+
+        wb_compras.save(compras_output_path)
+        wb_ventas.save(ventas_output_path)
+        
+        temp_file_paths.append(compras_output_path)
+        temp_file_paths.append(ventas_output_path)
+
+        zip_filename = "RCV_Procesado.zip"
+        zip_path = os.path.join(UPLOADS_DIR, zip_filename)
+        with zipfile.ZipFile(zip_path, 'w') as zipf:
+            zipf.write(compras_output_path, arcname=compras_output_filename)
+            zipf.write(ventas_output_path, arcname=ventas_output_filename)
+        
+        # vvv Se definen las variables de salida para la sección común vvv
+        output_path = zip_path
+        output_filename = zip_filename
 
     # --- Lógica común de guardado y limpieza ---
-    output_path = os.path.join(UPLOADS_DIR, output_filename)
-    workbook.save(output_path)
-    
+       
     for path in temp_file_paths:
         if os.path.exists(path):
             os.remove(path)
-            
-    return FileResponse(path=output_path, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename=output_filename)
+    media_type = 'application/zip' if output_filename.endswith('.zip') else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'        
+    return FileResponse(path=output_path, media_type=media_type, filename=output_filename)
 
 @app.get("/")
 def read_root():

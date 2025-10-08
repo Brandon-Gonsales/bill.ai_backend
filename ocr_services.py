@@ -62,56 +62,89 @@ def extract_data_with_template(file_path: str, prompt_fields: List[str]) -> str:
     except Exception as e:
         return f'{{"error": "Ocurrió un error al procesar con plantilla.", "details": "{str(e)}"}}'
 
-def extract_data_without_template(file_path: str, user_name: str, user_nit: str) -> str:
+def classify_invoice_type(file_path: str, user_name: str, user_nit: str) -> str:
     """
-    Procesa una factura para rellenar el RCV de Bolivia, determinando si es Compra o Venta.
+    Clasifica una factura extrayendo campos de cliente y aplicando lógica en Python.
     """
+    # Lista de todos los posibles campos que identifican al cliente/receptor
+    CUSTOMER_NAME_FIELDS = ["Nombre o Razon Social", "NOMBRE/RAZÓN SOCIAL", "RAZON SOCIAL", "Señor (es)"]
+    CUSTOMER_NIT_FIELDS = ["NIT/CI/CEX", "NIT/C.I.", "NIT/CI/CEX/P", "NIT/C.I./C.Ex./P."]
+    fields_to_check = CUSTOMER_NAME_FIELDS + CUSTOMER_NIT_FIELDS
+
+    # 1. Usamos la función de extracción para obtener los valores de esos campos
+    json_string = extract_data_with_template(file_path, fields_to_check)
+
     try:
-        media_part = _get_media_part(file_path)
-        if media_part is None: return f'{{"error": "Formato de archivo no soportado."}}'
-
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        extracted_data = json.loads(json_string)
         
-        # --- CAMBIO: Prompt altamente especializado para el RCV de Bolivia ---
-        prompt = f"""
-Actúa como un contador experto llenando el Registro de Compras y Ventas (RCV) de Bolivia. Te daré una factura y los datos de la empresa que registra. Tu tarea es clasificar la factura y extraer los datos para llenar la plantilla correspondiente.
+        # Preparamos los datos del usuario para una comparación robusta
+        user_nit_clean = str(user_nit).strip()
+        user_name_clean = user_name.lower().strip()
 
-**Datos de la Empresa Registrando:**
-- Nombre/Razón Social: "{user_name}"
-- NIT: "{user_nit}"
+        # 2. Iteramos sobre los valores extraídos para buscar una coincidencia
+        for field, value in extracted_data.items():
+            if value is None:
+                continue # Ignoramos campos no encontrados
 
-**Paso 1: Clasificación de la Factura**
-- Es una **COMPRA** si el NIT de la empresa ({user_nit}) aparece como el **receptor** (en el campo "NIT/CI/CEX").
-- Es una **VENTA** si el NIT de la empresa ({user_nit}) aparece como el **emisor** (en el campo "NIT" de la cabecera).
+            value_clean = str(value).lower().strip()
 
-**Paso 2: Extracción de Datos según la Plantilla RCV**
-- Si es una **COMPRA**, extrae los datos para estos campos: {json.dumps(BOLIVIAN_COMPRAS_FIELDS)}
-- Si es una **VENTA**, extrae los datos para estos campos: {json.dumps(BOLIVIAN_VENTAS_FIELDS)}
+            # Verificación del NIT (coincidencia exacta)
+            if field in CUSTOMER_NIT_FIELDS and value_clean == user_nit_clean:
+                print(f"INFO: Clasificado como Compra por coincidencia de NIT: {value}")
+                return "Compra"
+            
+            # Verificación del Nombre (coincidencia parcial, más flexible)
+            if field in CUSTOMER_NAME_FIELDS and user_name_clean in value_clean:
+                print(f"INFO: Clasificado como Compra por coincidencia de Nombre: {value}")
+                return "Compra"
 
-**Reglas de Mapeo y Llenado:**
-- **"NIT PROVEEDOR"**: Es el NIT del emisor de la factura.
-- **"RAZON SOCIAL PROVEEDOR"**: Es el nombre del emisor de la factura.
-- **"NIT / CI CLIENTE"**: Es el NIT del receptor de la factura.
-- **"NOMBRE O RAZON SOCIAL"**: Es el nombre del receptor de la factura.
-- **"CODIGO DE AUTORIZACION"**: Extrae el código de autorización.
-- **"NUMERO FACTURA"** o **"N° DE LA FACTURA"**: Extrae el número de la factura.
-- **"FECHA DE FACTURA/DUI/DIM"** o **"FECHA DE LA FACTURA"**: Extrae la fecha en formato AAAA-MM-DD.
-- **"IMPORTE TOTAL COMPRA"** o **"IMPORTE TOTAL DE LA VENTA"**: Usa el "MONTO A PAGAR" o total final.
-- **"IMPORTE BASE CF"** o **"IMPORTE BASE PARA DEBITO FISCAL"**: Usa el "IMPORTE BASE CRÉDITO FISCAL".
-- **"CREDITO FISCAL"** o **"DEBITO FISCAL"**: Calcula el 13% del importe base. Sé preciso.
-- **Valores por defecto (si no están en la factura)**: Para campos como "IMPORTE ICE", "IMPORTE IEHD", "TASAS", "DESCUENTOS...", si no los encuentras, usa `0.00`.
-- **"ESPECIFICACION"**: Usa `1` para Compras y `2` para Ventas.
-- **"ESTADO"**: Para Ventas, asume siempre "V" (Válida).
-- **"Nº"**: Deja este campo como `null`, se llenará después.
-- **Campos no presentes en la factura** (ej: "NUMERO DUI/DIM", "TIPO COMPRA"): Déjalos como `null`.
+        # 3. Si el bucle termina sin encontrar coincidencias, es una Venta
+        print("INFO: No se encontraron coincidencias de cliente, clasificado como Venta.")
+        return "Venta"
 
-**Formato de Salida Obligatorio:**
-Devuelve un único objeto JSON con dos claves: "tipo_factura" (con el valor "Compra" o "Venta") y "datos" (un objeto con los campos de la plantilla RCV correspondiente llenados).
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"ERROR: Fallo en la clasificación. No se pudo procesar la respuesta de la IA. Error: {e}")
+        return "Indeterminado"
+    
+def extract_data_without_template(file_path: str, user_name: str, user_nit: str) -> str:
+    # Paso 1: Clasificar la factura con la nueva lógica robusta
+    invoice_type = classify_invoice_type(file_path, user_name, user_nit)
 
-Analiza el documento y proporciona la respuesta.
-"""
-        content = [prompt, media_part]
-        response = model.generate_content(content)
-        return response.text.strip().replace('```json', '').replace('```', '')
-    except Exception as e:
-        return f'{{"error": "Ocurrió un error en el flujo sin plantilla.", "details": "{str(e)}"}}'
+    # Paso 2: Seleccionar los campos correctos y manejar errores
+    if invoice_type == "Compra":
+        fields_to_extract = BOLIVIAN_COMPRAS_FIELDS
+    elif invoice_type == "Venta":
+        fields_to_extract = BOLIVIAN_VENTAS_FIELDS
+    else:
+        error_data = {
+            "error": "Fallo en la Clasificación",
+            "details": f"No se pudo determinar si la factura es una compra o una venta."
+        }
+        final_error_response = {"tipo_factura": "Error", "datos": error_data}
+        return json.dumps(final_error_response, ensure_ascii=False)
+
+    # Paso 3: Extraer todos los datos usando la función de alto rendimiento
+    extracted_json_string = extract_data_with_template(file_path, fields_to_extract)
+
+    # Paso 4: Empaquetar la respuesta final
+    try:
+        extracted_data = json.loads(extracted_json_string)
+        if invoice_type == "Compra":
+            extracted_data["ESPECIFICACION"] = 1
+        elif invoice_type == "Venta":
+            extracted_data["ESPECIFICACION"] = 2
+            extracted_data["ESTADO"] = "V"
+
+        final_response = {
+            "tipo_factura": invoice_type,
+            "datos": extracted_data
+        }
+        return json.dumps(final_response, ensure_ascii=False)
+    except json.JSONDecodeError:
+        error_data = {
+            "error": "Fallo en la Extracción",
+            "details": "La IA devolvió un formato JSON no válido.",
+            "raw_response": extracted_json_string
+        }
+        final_error_response = {"tipo_factura": invoice_type, "datos": error_data}
+        return json.dumps(final_error_response, ensure_ascii=False)
