@@ -1,192 +1,38 @@
-import os
-import shutil
-import json
-import zipfile 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
-from fastapi.responses import FileResponse
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import openpyxl
-from typing import List
 
-# CAMBIO: Importar las nuevas listas de columnas oficiales del RCV
-from ocr_services import (
-    extract_data_with_openai,
-    BOLIVIAN_COMPRAS_FIELDS,
-    BOLIVIAN_VENTAS_FIELDS
+from database import models
+from database.database import engine
+
+# 1. Importamos nuestro nuevo router de autenticación
+from routers import auth
+from routers import lotes
+
+models.Base.metadata.create_all(bind=engine)
+
+app = FastAPI(
+    title="Factura OCR API (con Usuarios y Lotes)",
+    description="API para procesar facturas en lotes persistentes."
 )
 
-app = FastAPI(title="Factura OCR API (RCV Bolivia)", description="API para procesar facturas y generar un borrador del Registro de Compras y Ventas.")
-
-# --- Configuración de CORS (sin cambios) ---
+# ... (tu configuración de CORS no cambia)
 origins = [
     "http://localhost:5173", "http://localhost:5174", "http://localhost:5175",
-    "https://bill-ai-frontend.vercel.app","https://bill-ai-frontend-git-develop-brandon-gonsales-projects.vercel.app",
+    "https://bill-ai-frontend.vercel.app",
+    "https://bill-ai-frontend-git-develop-brandon-gonsales-projects.vercel.app",
 ]
 app.add_middleware(
     CORSMiddleware, allow_origins=origins, allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
 
-# --- Configuración de directorios (sin cambios) ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
-TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
-os.makedirs(UPLOADS_DIR, exist_ok=True)
-os.makedirs(TEMPLATES_DIR, exist_ok=True)
-RCV_TEMPLATES_DIR = os.path.join(TEMPLATES_DIR, "rcv_templates")
-COMPRAS_TEMPLATE_PATH = os.path.join(RCV_TEMPLATES_DIR, "RCV_Compras_Template.xlsx")
-VENTAS_TEMPLATE_PATH = os.path.join(RCV_TEMPLATES_DIR, "RCV_Ventas_Template.xlsx")
-active_template = {"path": None, "fields": []}
 
-# vvv AÑADE ESTE BLOQUE DE CÓDIGO COMPLETO vvv
-def _prepare_row_for_excel(row_data: list) -> list:
-    """
-    Revisa cada celda de una fila. Si el contenido es una lista o un diccionario,
-    lo convierte a un string JSON. De lo contrario, lo deja como está.
-    Esto previene el error 'ValueError: Cannot convert ... to Excel'.
-    """
-    prepared_row = []
-    for item in row_data:
-        if isinstance(item, (list, dict)):
-            # Convertir a string JSON, ensure_ascii=False para acentos y caracteres especiales
-            prepared_row.append(json.dumps(item, ensure_ascii=False, indent=2))
-        else:
-            prepared_row.append(item)
-    return prepared_row
-# ^^^ FIN DEL BLOQUE A AÑADIR ^^^
+# 2. "Enchufamos" el router de autenticación a la aplicación principal.
+# Ahora, FastAPI sabe que existen los endpoints /register y /token.
+app.include_router(auth.router)
+app.include_router(lotes.router)
 
-# --- Endpoints /upload-template/ y /clear-template/ (sin cambios) ---
-@app.post("/upload-template/")
-async def upload_template(file: UploadFile = File(...)):
-    if not file.filename.endswith(('.xlsx')):
-        raise HTTPException(status_code=400, detail="El archivo debe ser un .xlsx")
-    template_path = os.path.join(TEMPLATES_DIR, "template.xlsx")
-    with open(template_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    try:
-        workbook = openpyxl.load_workbook(template_path)
-        sheet = workbook.active
-        headers = [cell.value for cell in sheet[1] if cell.value]
-        if not headers: raise HTTPException(status_code=400, detail="La plantilla no tiene encabezados en la primera fila.")
-        active_template["path"] = template_path
-        active_template["fields"] = headers
-        return {"message": "Plantilla cargada exitosamente", "campos_detectados": headers}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"No se pudo procesar la plantilla: {e}")
-#dldldldl
-@app.post("/clear-template/")
-async def clear_template():
-    active_template["path"] = None
-    active_template["fields"] = []
-    template_file = os.path.join(TEMPLATES_DIR, "template.xlsx")
-    if os.path.exists(template_file): os.remove(template_file)
-    return {"message": "Plantilla limpiada."}
-
-@app.post("/process-invoice/")
-async def process_invoice(
-    files: List[UploadFile] = File(...),
-    nombre: str = Form(None),
-    nit: str = Form(None),
-    es_compra: bool = Form(True)
-):
-    temp_file_paths = [] # Para la limpieza final
-
-    # --- CORRECCIÓN: Separación total de la lógica ---
-    if active_template["path"]:
-        # --- Flujo 1: CON PLANTILLA PERSONALIZADA ---
-        print("INFO: Ejecutando flujo CON plantilla.")
-        try:
-            # Cargar el libro de trabajo DESDE la plantilla guardada
-            workbook = openpyxl.load_workbook(active_template["path"])
-            sheet = workbook.active
-            fields_for_header = active_template["fields"]
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error al cargar la plantilla guardada: {e}")
-
-        for file in files:
-            file_path = os.path.join(UPLOADS_DIR, file.filename)
-            temp_file_paths.append(file_path)
-            with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-            
-            json_string = extract_data_with_openai(file_path, fields_for_header)
-            try:
-                data = json.loads(json_string)
-                new_row = [data.get(field) for field in fields_for_header]
-            except (json.JSONDecodeError, AttributeError):
-                new_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida"] * (len(fields_for_header) - 1)
-            prepared_row = _prepare_row_for_excel(new_row)
-            sheet.append(prepared_row)
-        
-        output_filename = f"processed_{os.path.basename(active_template['path'])}"
-        output_path = os.path.join(UPLOADS_DIR, output_filename)
-        workbook.save(output_path)
-        media_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        
-    else:
-        # --- Flujo 2: SIN PLANTILLA (Generación de RCV) ---
-        print("INFO: Ejecutando flujo SIN plantilla (RCV).")
-        if not nombre or not nit:
-            raise HTTPException(status_code=400, detail="Se requiere 'nombre' y 'nit' cuando no hay plantilla.")
-        
-        # 1. Decidir qué plantilla y qué campos usar basado en el booleano
-        if es_compra:
-            template_path = COMPRAS_TEMPLATE_PATH
-            fields_for_rcv = BOLIVIAN_COMPRAS_FIELDS
-            output_filename = "RCV_Compras_Procesado.xlsx"
-            print("INFO: Procesando lote como COMPRAS.")
-        else:
-            template_path = VENTAS_TEMPLATE_PATH
-            fields_for_rcv = BOLIVIAN_VENTAS_FIELDS
-            output_filename = "RCV_Ventas_Procesado.xlsx"
-            print("INFO: Procesando lote como VENTAS.")
-
-        # 2. Cargar el libro de trabajo de la plantilla elegida
-        try:
-            workbook = openpyxl.load_workbook(template_path)
-            sheet = workbook.active
-        except FileNotFoundError:
-            raise HTTPException(status_code=500, detail=f"No se encontró la plantilla maestra {os.path.basename(template_path)} en el servidor.")
-        
-        
-         # 3. Procesar cada archivo (sin clasificar)
-        for file in files:
-            file_path = os.path.join(UPLOADS_DIR, file.filename)
-            temp_file_paths.append(file_path)
-            with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-            
-            # Llamamos a la nueva y simple función de extracción
-            json_string = extract_data_with_openai(file_path, fields_for_rcv)
-            try:
-                data = json.loads(json_string)
-                new_row = [data.get(field) for field in fields_for_rcv]
-                
-                idx_especificacion = fields_for_rcv.index('ESPECIFICACION')
-                if es_compra:
-                    new_row[idx_especificacion] = 1 
-                else:
-                    new_row[idx_especificacion] = 2
-                    idx_estado = fields_for_rcv.index('ESTADO')
-                    new_row[idx_estado] = "V"
-
-            except (json.JSONDecodeError, AttributeError, IndexError, ValueError):
-                 new_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida o error de procesamiento"] * (len(fields_for_rcv) - 1)
-            
-            prepared_row = _prepare_row_for_excel(new_row)
-            sheet.append(prepared_row)
-
-
-        # 4. Guardar el único archivo Excel resultante
-        output_path = os.path.join(UPLOADS_DIR, output_filename)
-        workbook.save(output_path)
-        media_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    # --- Lógica común de guardado y limpieza ---
-       
-    for path in temp_file_paths:
-        if os.path.exists(path):
-            os.remove(path)
-            
-    return FileResponse(path=output_path, media_type=media_type, filename=output_filename)
 
 @app.get("/")
 def read_root():
-    return {"message": "Bienvenido a la API de OCR para RCV Bolivia."}
+    return {"message": "Bienvenido a la nueva API de Facturas v2.0"}

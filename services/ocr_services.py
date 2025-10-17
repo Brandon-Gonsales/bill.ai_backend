@@ -76,7 +76,7 @@ Reglas importantes:
 
         # ¡Hacemos la llamada a la API de OpenAI!
         response = client.chat.completions.create(
-            model="gpt-4o",  # El mejor modelo de OpenAI para ver imágenes
+            model="gpt-5-nano",  # El mejor modelo de OpenAI para ver imágenes
             messages=messages,
             max_tokens=2048,
             response_format={"type": "json_object"} # Forzamos a que la respuesta sea un JSON válido
