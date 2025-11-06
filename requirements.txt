@@ -6,4 +6,4 @@ openpyxl
 Pillow
 openai
 PyMuPDF
-dateutil
+python-dateutil
