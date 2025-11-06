@@ -76,10 +76,10 @@ Reglas importantes:
 
         # ¡Hacemos la llamada a la API de OpenAI!
         response = client.chat.completions.create(
-            model="gpt-5-nano",
+            model="gpt-4o",  # El mejor modelo de OpenAI para ver imágenes
             messages=messages,
-            max_completion_tokens=2048,
-            response_format={"type": "json_object"}
+            max_tokens=2048,
+            response_format={"type": "json_object"} # Forzamos a que la respuesta sea un JSON válido
         )
         
         return response.choices[0].message.content.strip()
