@@ -41,49 +41,52 @@ def _image_to_base64_url(image: Image.Image, format="jpeg") -> str:
 # Esta única función reemplaza a 'extract_data_with_template' y 'extract_data_without_template'
 def extract_data_with_openai(file_path: str, prompt_fields: List[str]) -> str:
     """
-    Procesa un archivo (PDF o imagen), lo convierte a imágenes y llama a la API de OpenAI.
+    Procesa un archivo PDF o de texto, extrae el texto y llama al modelo GPT-5-nano.
     """
     try:
-        image_urls = []
+        text_content = ""
         file_extension = os.path.splitext(file_path)[1].lower()
 
-        # --- Lógica para manejar PDFs y convertirlos a imágenes ---
-        if file_extension == '.pdf':
-            doc = fitz.open(file_path)  # Abrir el PDF con PyMuPDF
-            for page in doc:  # Para cada página del PDF...
-                pix = page.get_pixmap()  # ...la convertimos en una imagen.
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                image_urls.append(_image_to_base64_url(img))
+        # --- Extraer texto si es PDF ---
+        if file_extension == ".pdf":
+            doc = fitz.open(file_path)
+            for page in doc:
+                text_content += page.get_text("text") + "\n"
             doc.close()
-        elif file_extension in ['.png', '.jpg', '.jpeg', '.webp']:
-            with Image.open(file_path) as img:
-                image_urls.append(_image_to_base64_url(img))
-        
-        if not image_urls:
-            return f'{{"error": "El archivo está vacío o no es un formato soportado."}}'
+        elif file_extension in [".txt", ".csv", ".json"]:
+            with open(file_path, "r", encoding="utf-8") as f:
+                text_content = f.read()
+        else:
+            return json.dumps({"error": "Formato no soportado para gpt-5-nano (usa texto o PDF con texto)"})
 
-        # Preparamos el prompt (la instrucción para la IA)
+        if not text_content.strip():
+            return json.dumps({"error": "No se encontró texto en el archivo."})
+
+        # --- Construir el prompt ---
         fields_str = '", "'.join(prompt_fields)
-        prompt = f"""Actúa como un experto en extracción de datos de facturas de Bolivia. Analiza la(s) imagen(es) de la factura y extrae los siguientes campos en formato JSON: "{fields_str}".
-Reglas importantes:
-1. El resultado debe ser EXCLUSIVAMENTE el objeto JSON.
-2. Si un campo no se encuentra, su valor debe ser `null`."""
+        prompt = f"""Actúa como un experto en extracción de datos de facturas bolivianas.
+                    A partir del siguiente texto, extrae los campos: "{fields_str}".
+                    Devuelve exclusivamente un JSON con esos campos. Si falta alguno, usa null.
+                    Texto de la factura:
+                    {text_content}
+                    """
 
-        # Creamos el mensaje en el formato que OpenAI espera
-        messages = [
-            { "role": "user", "content": [{"type": "text", "text": prompt}] + [{"type": "image_url", "image_url": {"url": url}} for url in image_urls] }
-        ]
-
-        # ¡Hacemos la llamada a la API de OpenAI!
+        # --- Llamada a OpenAI ---
         response = client.chat.completions.create(
-            model="gpt-4o",  # El mejor modelo de OpenAI para ver imágenes
-            messages=messages,
-            max_tokens=2048,
-            response_format={"type": "json_object"} # Forzamos a que la respuesta sea un JSON válido
+            model="gpt-5-nano",
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=2048
         )
-        
-        return response.choices[0].message.content.strip()
+
+        # --- Procesar respuesta ---
+        content = response.choices[0].message.content.strip()
+        # Intentamos asegurar que sea JSON válido
+        try:
+            json.loads(content)
+            return content
+        except:
+            return json.dumps({"error": "Respuesta no válida o error de procesamiento", "raw": content})
 
     except Exception as e:
         print(f"ERROR en OpenAI Service: {e}")
-        return f'{{"error": "Ocurrió un error al procesar con OpenAI.", "details": "{str(e)}"}}'
+        return json.dumps({"error": "Ocurrió un error al procesar con OpenAI.", "details": str(e)})
