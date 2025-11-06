@@ -38,6 +38,33 @@ COMPRAS_TEMPLATE_PATH = os.path.join(RCV_TEMPLATES_DIR, "RCV_Compras_Template.xl
 VENTAS_TEMPLATE_PATH = os.path.join(RCV_TEMPLATES_DIR, "RCV_Ventas_Template.xlsx")
 active_template = {"path": None, "fields": []}
 
+COMPRAS_AI_FIELDS = [
+    "NIT PROVEEDOR",
+    "RAZON SOCIAL PROVEEDOR",
+    "CODIGO DE AUTORIZACION",
+    "NUMERO FACTURA",
+    "NUMERO DUI/DIM",
+    "FECHA DE FACTURA/DUI/DIM",
+    "IMPORTE TOTAL COMPRA",
+    "SUBTOTAL",
+    "DESCUENTOS/BONIFICACIONES /REBAJAS SUJETAS AL IVA",
+    "IMPORTE GIFT CARD",
+    "IMPORTE BASE CF"
+]
+
+VENTAS_AI_FIELDS = [
+    "FECHA DE LA FACTURA",
+    "N° DE LA FACTURA",
+    "CODIGO DE AUTORIZACION",
+    "NIT / CI CLIENTE",
+    "COMPLEMENTO",
+    "NOMBRE O RAZON SOCIAL",
+    "IMPORTE TOTAL DE LA VENTA",
+    "SUBTOTAL",
+    "IMPORTE BASE PARA DEBITO FISCAL",
+    "CODIGO DE CONTROL"
+]
+
 # vvv AÑADE ESTE BLOQUE DE CÓDIGO COMPLETO vvv
 def _prepare_row_for_excel(row_data: list) -> list:
     """
@@ -131,12 +158,14 @@ async def process_invoice(
         # 1. Decidir qué plantilla y qué campos usar basado en el booleano
         if es_compra:
             template_path = COMPRAS_TEMPLATE_PATH
-            fields_for_rcv = BOLIVIAN_COMPRAS_FIELDS
+            fields_for_excel = BOLIVIAN_COMPRAS_FIELDS
+            fields_for_ai = COMPRAS_AI_FIELDS
             output_filename = "RCV_Compras_Procesado.xlsx"
             print("INFO: Procesando lote como COMPRAS.")
         else:
             template_path = VENTAS_TEMPLATE_PATH
-            fields_for_rcv = BOLIVIAN_VENTAS_FIELDS
+            fields_for_excel = BOLIVIAN_VENTAS_FIELDS
+            fields_for_ai = VENTAS_AI_FIELDS 
             output_filename = "RCV_Ventas_Procesado.xlsx"
             print("INFO: Procesando lote como VENTAS.")
 
@@ -155,21 +184,13 @@ async def process_invoice(
             with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
             
             # Llamamos a la nueva y simple función de extracción
-            json_string = extract_data_with_openai(file_path, fields_for_rcv)
+            json_string = extract_data_with_openai(file_path, fields_for_ai)
             try:
                 data = json.loads(json_string)
-                new_row = [data.get(field) for field in fields_for_rcv]
-                
-                idx_especificacion = fields_for_rcv.index('ESPECIFICACION')
-                if es_compra:
-                    new_row[idx_especificacion] = 1 
-                else:
-                    new_row[idx_especificacion] = 2
-                    idx_estado = fields_for_rcv.index('ESTADO')
-                    new_row[idx_estado] = "V"
+                new_row = [data.get(field) for field in fields_for_excel]
 
-            except (json.JSONDecodeError, AttributeError, IndexError, ValueError):
-                 new_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida o error de procesamiento"] * (len(fields_for_rcv) - 1)
+            except (json.JSONDecodeError, AttributeError):
+                new_row = [f"ERROR: {file.filename}"] + ["Respuesta no válida o error de procesamiento"] * (len(fields_for_excel) - 1)
             
             prepared_row = _prepare_row_for_excel(new_row)
             sheet.append(prepared_row)
