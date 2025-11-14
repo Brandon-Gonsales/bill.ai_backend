@@ -24,4 +24,4 @@ ENV PORT 8080
 # que escuche en todas las interfaces en el puerto que especifica la variable $PORT,
 
 # y que ejecute la instancia 'app' que está dentro del archivo 'main.py'.
-CMD gunicorn -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT main:app
+CMD ["sh", "-c", "gunicorn -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 300 main:app"]
