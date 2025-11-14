@@ -158,8 +158,98 @@ async def process_invoice(
             
             # PASO 1: Crear fila base con datos primarios
             new_row = [data.get(field) for field in fields_for_excel]
-            # (Aquí va toda tu lógica de los PASOS 2 a 7, sin cambios)
-            # ...
+            # PASO 2: Asignar 0 a campos numéricos de ENTRADA si están vacíos
+            for field_name in INPUT_FIELDS_TO_DEFAULT_TO_ZERO:
+                if field_name in fields_for_excel:
+                    try:
+                        idx = fields_for_excel.index(field_name)
+                        if new_row[idx] is None:
+                            new_row[idx] = 0
+                    except ValueError:
+                        pass # El campo no existe en esta plantilla, se ignora
+
+            # PASO 3: Estandarizar el formato de la fecha
+            if es_compra:
+                date_idx = fields_for_excel.index('FECHA DE FACTURA/DUI/DIM')
+                new_row[date_idx] = _format_date_to_dmy(new_row[date_idx])
+            else: # Es Venta
+                date_idx = fields_for_excel.index('FECHA DE LA FACTURA')
+                new_row[date_idx] = _format_date_to_dmy(new_row[date_idx])
+
+            # PASO 4: Calcular valores condicionalmente
+            if es_compra:
+                # Lógica de Compras (sin cambios)
+                subtotal_idx = fields_for_excel.index('SUBTOTAL')
+                if new_row[subtotal_idx] is None:
+                    total = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE TOTAL COMPRA')]) or 0.0
+                    ice = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE ICE')]) or 0.0
+                    iehd = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE IEHD')]) or 0.0
+                    ipj = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE IPJ')]) or 0.0
+                    tasas = _clean_and_convert_to_float(new_row[fields_for_excel.index('TASAS')]) or 0.0
+                    otro_no_sujeto = _clean_and_convert_to_float(new_row[fields_for_excel.index('OTRO NO SUJETO A CREDITO FISCAL')]) or 0.0
+                    exentos = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTES EXENTOS')]) or 0.0
+                    tasa_cero = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE COMPRAS GRAVADAS A TASA CERO')]) or 0.0
+                    new_row[subtotal_idx] = round(total - ice - iehd - ipj - tasas - otro_no_sujeto - exentos - tasa_cero, 2)
+                
+                base_cf_idx = fields_for_excel.index('IMPORTE BASE CF')
+                if new_row[base_cf_idx] is None:
+                    subtotal = _clean_and_convert_to_float(new_row[subtotal_idx]) or 0.0
+                    descuentos = _clean_and_convert_to_float(new_row[fields_for_excel.index('DESCUENTOS/BONIFICACIONES /REBAJAS SUJETAS AL IVA')]) or 0.0
+                    gift_card = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE GIFT CARD')]) or 0.0
+                    new_row[base_cf_idx] = round(subtotal - descuentos - gift_card, 2)
+            else: # Es Venta
+                # Lógica de Ventas
+                subtotal_idx = fields_for_excel.index('SUBTOTAL')
+                if new_row[subtotal_idx] is None:
+                    total_venta = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE TOTAL DE LA VENTA')]) or 0.0
+                    ice = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE ICE')]) or 0.0
+                    iehd = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE IEHD')]) or 0.0
+                    ipj = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE IPJ')]) or 0.0
+                    tasas = _clean_and_convert_to_float(new_row[fields_for_excel.index('TASAS')]) or 0.0
+                    otros_no_iva = _clean_and_convert_to_float(new_row[fields_for_excel.index('OTROS NO SUJETOS AL IVA')]) or 0.0
+                    exportaciones = _clean_and_convert_to_float(new_row[fields_for_excel.index('EXPORTACIONES Y OPERACIONES EXENTAS')]) or 0.0
+                    tasa_cero = _clean_and_convert_to_float(new_row[fields_for_excel.index('VENTAS GRAVADAS A TASA CERO')]) or 0.0
+                    new_row[subtotal_idx] = round(total_venta - ice - iehd - ipj - tasas - otros_no_iva - exportaciones - tasa_cero, 2)
+
+                base_df_idx = fields_for_excel.index('IMPORTE BASE PARA DEBITO FISCAL')
+                if new_row[base_df_idx] is None:
+                    subtotal = _clean_and_convert_to_float(new_row[subtotal_idx]) or 0.0
+                    descuentos = 0.0
+                    try:
+                        descuentos = _clean_and_convert_to_float(new_row[fields_for_excel.index('DESCUENTOS, BONIFICACIONES Y REBAJAS SUJETAS AL IVA')]) or 0.0
+                    except ValueError: pass
+                    gift_card = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE GIFT CARD')]) or 0.0
+                    new_row[base_df_idx] = round(subtotal - descuentos - gift_card, 2)
+
+            # PASO 5: Asignar valores fijos y secuenciales
+            new_row[fields_for_excel.index('Nº')] = row_number
+            if es_compra:
+                new_row[fields_for_excel.index('ESPECIFICACION')] = 1
+            else: # Es Venta
+                new_row[fields_for_excel.index('ESPECIFICACION')] = 2
+                new_row[fields_for_excel.index('ESTADO')] = "V"
+                new_row[fields_for_excel.index('TIPO DE VENTA')] = 0
+            
+            # PASO 6: Realizar cálculos finales (Crédito/Débito Fiscal)
+            if es_compra:
+                base_cf_value = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE BASE CF')])
+                if base_cf_value is not None:
+                    new_row[fields_for_excel.index('CREDITO FISCAL')] = round(base_cf_value * 0.13, 2)
+            else: # Es Venta
+                base_df_value = _clean_and_convert_to_float(new_row[fields_for_excel.index('IMPORTE BASE PARA DEBITO FISCAL')])
+                if base_df_value is not None:
+                    new_row[fields_for_excel.index('DEBITO FISCAL')] = round(base_df_value * 0.13, 2)
+
+            # --- NUEVO PASO ---
+            # PASO 7: Limpieza final - Asegurarse que todos los campos numéricos sean 0 si son None
+            for field_name in FINAL_NUMERIC_FIELDS:
+                if field_name in fields_for_excel:
+                    try:
+                        idx = fields_for_excel.index(field_name)
+                        if new_row[idx] is None:
+                            new_row[idx] = 0
+                    except ValueError:
+                        pass # El campo no existe en esta plantilla, se ignora
             # PASO 8: Finalizar y añadir la fila al Excel
             sheet.append(_prepare_row_for_excel(new_row))
             row_number += 1
