@@ -16,6 +16,7 @@ from ocr_services import (
 
 app = FastAPI(title="Factura OCR API (RCV Bolivia)", description="API para procesar facturas y generar un borrador del Registro de Compras y Ventas.")
 
+#prueba
 # --- Configuración de CORS y Directorios (sin cambios) ---
 origins = ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "https://bill-ai-frontend.vercel.app", "https://bill-ai-frontend-git-develop-brandon-gonsales-projects.vercel.app"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
